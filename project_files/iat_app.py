@@ -50,11 +50,10 @@ def calculate_follow_up(date_applied_iso: str) -> str:
 
 
 def fetch_application_by_id(app_id: int) -> dict | None:
-    """Fetch one application record and return it as a dict, or None if not found."""
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.execute(
             """
-            SELECT application_id, company_name, role_title, date_applied, status, notes
+            SELECT application_id, company_name, role_title, date_applied, status, follow_up_date, notes, archived
             FROM Applications
             WHERE application_id = ?;
             """,
@@ -71,7 +70,9 @@ def fetch_application_by_id(app_id: int) -> dict | None:
         "role_title": row[2],
         "date_applied": row[3],
         "status": row[4],
-        "notes": row[5] or "",
+        "follow_up_date": row[5],
+        "notes": row[6] or "",
+        "archived": bool(row[7]),
     }
 
 
@@ -204,7 +205,13 @@ class IATApp(tk.Tk):
         top.pack(fill="x", padx=10, pady=10)
 
         ttk.Button(top, text="Add", command=self.open_add_window).pack(side="left")
+
         ttk.Button(top, text="Edit", command=self.edit_selected).pack(side="left", padx=6)
+        
+        ttk.Button(top, text="Archive", command=self.archive_selected).pack(side="left", padx=6)
+        
+        ttk.Button(top, text="Delete", command=self.delete_selected).pack(side="left", padx=6)
+
         ttk.Button(top, text="Refresh", command=self.load_rows).pack(side="left", padx=10)
 
         # Table (Treeview)
@@ -259,6 +266,39 @@ class IATApp(tk.Tk):
             messagebox.showinfo("Edit", "Please select an application to edit.")
             return
         ApplicationFormWindow(self, on_saved_callback=self.load_rows, app_id=app_id)
+
+    def archive_selected(self) -> None:
+        app_id = self.get_selected_app_id()
+        if app_id is None:
+            messagebox.showinfo("Archive", "Please select an application to archive.")
+            return
+
+        if not messagebox.askyesno("Archive", "Archive the selected application?"):
+            return
+
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                "UPDATE Applications SET archived = 1, status = 'Archived' WHERE application_id = ?;",
+                (app_id,),
+            )
+            conn.commit()
+
+        self.load_rows()
+
+    def delete_selected(self) -> None:
+        app_id = self.get_selected_app_id()
+        if app_id is None:
+            messagebox.showinfo("Delete", "Please select an application to delete.")
+            return
+
+        if not messagebox.askyesno("Delete", "This will permanently delete the selected application. Continue?"):
+            return
+
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("DELETE FROM Applications WHERE application_id = ?;", (app_id,))
+            conn.commit()
+
+        self.load_rows()
 
     def load_rows(self) -> None:
         for item in self.tree.get_children():
