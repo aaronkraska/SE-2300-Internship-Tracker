@@ -49,12 +49,46 @@ def calculate_follow_up(date_applied_iso: str) -> str:
     return (dt + timedelta(days=10)).strftime("%Y-%m-%d")
 
 
-class AddApplicationWindow(tk.Toplevel):
-    def __init__(self, parent, on_saved_callback):
+def fetch_application_by_id(app_id: int) -> dict | None:
+    """Fetch one application record and return it as a dict, or None if not found."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.execute(
+            """
+            SELECT application_id, company_name, role_title, date_applied, status, notes
+            FROM Applications
+            WHERE application_id = ?;
+            """,
+            (app_id,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "application_id": row[0],
+        "company_name": row[1],
+        "role_title": row[2],
+        "date_applied": row[3],
+        "status": row[4],
+        "notes": row[5] or "",
+    }
+
+
+class ApplicationFormWindow(tk.Toplevel):
+    """
+    Reusable window for both Add and Edit.
+    If app_id is None -> Add mode
+    If app_id is int -> Edit mode (loads record and updates it)
+    """
+
+    def __init__(self, parent, on_saved_callback, app_id: int | None = None):
         super().__init__(parent)
-        self.title("Add Application")
         self.resizable(False, False)
         self.on_saved_callback = on_saved_callback
+        self.app_id = app_id
+
+        self.title("Edit Application" if self.app_id is not None else "Add Application")
 
         self.company_var = tk.StringVar()
         self.role_var = tk.StringVar()
@@ -87,8 +121,24 @@ class AddApplicationWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=6)
         ttk.Button(btn_frame, text="Save", command=self.save).grid(row=0, column=1, padx=6)
 
-        # Convenience: set focus to first field
+        # Load existing data if editing
+        if self.app_id is not None:
+            self.load_existing()
+
         self.after(50, lambda: self.focus_force())
+
+    def load_existing(self) -> None:
+        record = fetch_application_by_id(self.app_id)
+        if record is None:
+            messagebox.showerror("Error", "That application no longer exists.")
+            self.destroy()
+            return
+
+        self.company_var.set(record["company_name"])
+        self.role_var.set(record["role_title"])
+        self.date_var.set(record["date_applied"])
+        self.status_var.set(record["status"])
+        self.notes_var.set(record["notes"])
 
     def save(self) -> None:
         company = self.company_var.get().strip()
@@ -97,7 +147,7 @@ class AddApplicationWindow(tk.Toplevel):
         status = self.status_var.get().strip()
         notes = self.notes_var.get().strip()
 
-        # Basic validation
+        # Validation
         if not company:
             messagebox.showerror("Validation Error", "Company name is required.")
             return
@@ -119,14 +169,24 @@ class AddApplicationWindow(tk.Toplevel):
         follow_up_date = calculate_follow_up(date_applied)
 
         with sqlite3.connect(DB_FILE) as conn:
-            conn.execute(
-                """
-                INSERT INTO Applications
-                (company_name, role_title, date_applied, status, follow_up_date, notes, archived)
-                VALUES (?, ?, ?, ?, ?, ?, 0);
-                """,
-                (company, role, date_applied, status, follow_up_date, notes),
-            )
+            if self.app_id is None:
+                conn.execute(
+                    """
+                    INSERT INTO Applications
+                    (company_name, role_title, date_applied, status, follow_up_date, notes, archived)
+                    VALUES (?, ?, ?, ?, ?, ?, 0);
+                    """,
+                    (company, role, date_applied, status, follow_up_date, notes),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE Applications
+                    SET company_name = ?, role_title = ?, date_applied = ?, status = ?, follow_up_date = ?, notes = ?
+                    WHERE application_id = ?;
+                    """,
+                    (company, role, date_applied, status, follow_up_date, notes, self.app_id),
+                )
             conn.commit()
 
         self.on_saved_callback()
@@ -137,19 +197,19 @@ class IATApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Internship Application Tracker (Prototype)")
-        self.geometry("900x420")
+        self.geometry("980x460")
 
         # Top buttons
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=10)
 
-        ttk.Button(top, text="Add Application", command=self.open_add_window).pack(side="left")
-
-        ttk.Button(top, text="Refresh", command=self.load_rows).pack(side="left", padx=8)
+        ttk.Button(top, text="Add", command=self.open_add_window).pack(side="left")
+        ttk.Button(top, text="Edit", command=self.edit_selected).pack(side="left", padx=6)
+        ttk.Button(top, text="Refresh", command=self.load_rows).pack(side="left", padx=10)
 
         # Table (Treeview)
         columns = ("id", "company", "role", "date_applied", "status", "follow_up", "archived")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=14)
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=15)
 
         self.tree.heading("id", text="ID")
         self.tree.heading("company", text="Company")
@@ -161,13 +221,16 @@ class IATApp(tk.Tk):
 
         self.tree.column("id", width=50, anchor="center")
         self.tree.column("company", width=180)
-        self.tree.column("role", width=220)
+        self.tree.column("role", width=240)
         self.tree.column("date_applied", width=110, anchor="center")
-        self.tree.column("status", width=140)
+        self.tree.column("status", width=150)
         self.tree.column("follow_up", width=120, anchor="center")
         self.tree.column("archived", width=80, anchor="center")
 
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Double-click to edit
+        self.tree.bind("<Double-1>", lambda _event: self.edit_selected())
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -176,7 +239,26 @@ class IATApp(tk.Tk):
         self.load_rows()
 
     def open_add_window(self) -> None:
-        AddApplicationWindow(self, on_saved_callback=self.load_rows)
+        ApplicationFormWindow(self, on_saved_callback=self.load_rows, app_id=None)
+
+    def get_selected_app_id(self) -> int | None:
+        selected = self.tree.selection()
+        if not selected:
+            return None
+        values = self.tree.item(selected[0], "values")
+        if not values:
+            return None
+        try:
+            return int(values[0])
+        except (ValueError, TypeError):
+            return None
+
+    def edit_selected(self) -> None:
+        app_id = self.get_selected_app_id()
+        if app_id is None:
+            messagebox.showinfo("Edit", "Please select an application to edit.")
+            return
+        ApplicationFormWindow(self, on_saved_callback=self.load_rows, app_id=app_id)
 
     def load_rows(self) -> None:
         for item in self.tree.get_children():
