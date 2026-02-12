@@ -50,10 +50,11 @@ def calculate_follow_up(date_applied_iso: str) -> str:
 
 
 def fetch_application_by_id(app_id: int) -> dict | None:
+    """Fetch one application record and return it as a dict, or None if not found."""
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.execute(
             """
-            SELECT application_id, company_name, role_title, date_applied, status, follow_up_date, notes, archived
+            SELECT application_id, company_name, role_title, date_applied, status, notes, archived
             FROM Applications
             WHERE application_id = ?;
             """,
@@ -70,9 +71,8 @@ def fetch_application_by_id(app_id: int) -> dict | None:
         "role_title": row[2],
         "date_applied": row[3],
         "status": row[4],
-        "follow_up_date": row[5],
-        "notes": row[6] or "",
-        "archived": bool(row[7]),
+        "notes": row[5] or "",
+        "archived": bool(row[6]),
     }
 
 
@@ -122,7 +122,6 @@ class ApplicationFormWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=6)
         ttk.Button(btn_frame, text="Save", command=self.save).grid(row=0, column=1, padx=6)
 
-        # Load existing data if editing
         if self.app_id is not None:
             self.load_existing()
 
@@ -148,7 +147,6 @@ class ApplicationFormWindow(tk.Toplevel):
         status = self.status_var.get().strip()
         notes = self.notes_var.get().strip()
 
-        # Validation
         if not company:
             messagebox.showerror("Validation Error", "Company name is required.")
             return
@@ -198,25 +196,55 @@ class IATApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Internship Application Tracker (Prototype)")
-        self.geometry("980x460")
+        self.geometry("1060x520")
 
-        # Top buttons
+        # Top controls row
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=10)
 
         ttk.Button(top, text="Add", command=self.open_add_window).pack(side="left")
-
         ttk.Button(top, text="Edit", command=self.edit_selected).pack(side="left", padx=6)
-        
         ttk.Button(top, text="Archive", command=self.archive_selected).pack(side="left", padx=6)
-        
         ttk.Button(top, text="Delete", command=self.delete_selected).pack(side="left", padx=6)
 
-        ttk.Button(top, text="Refresh", command=self.load_rows).pack(side="left", padx=10)
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
+
+        ttk.Label(top, text="Search:").pack(side="left")
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(top, textvariable=self.search_var, width=30)
+        search_entry.pack(side="left", padx=6)
+        search_entry.bind("<Return>", lambda _e: self.load_rows())
+
+        ttk.Label(top, text="Status:").pack(side="left", padx=(10, 0))
+        self.status_filter_var = tk.StringVar(value="All")
+        self.status_filter = ttk.Combobox(
+            top,
+            textvariable=self.status_filter_var,
+            values=["All"] + STATUSES,
+            state="readonly",
+            width=18,
+        )
+        self.status_filter.pack(side="left", padx=6)
+        self.status_filter.bind("<<ComboboxSelected>>", lambda _e: self.load_rows())
+
+        self.show_archived_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            top,
+            text="Show Archived",
+            variable=self.show_archived_var,
+            command=self.load_rows,
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Button(top, text="Clear Filters", command=self.clear_filters).pack(side="left", padx=10)
+        ttk.Button(top, text="Refresh", command=self.load_rows).pack(side="left", padx=6)
+
+        # Summary counts
+        self.summary_var = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.summary_var).pack(anchor="w", padx=10, pady=(0, 6))
 
         # Table (Treeview)
         columns = ("id", "company", "role", "date_applied", "status", "follow_up", "archived")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=15)
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=16)
 
         self.tree.heading("id", text="ID")
         self.tree.heading("company", text="Company")
@@ -227,22 +255,26 @@ class IATApp(tk.Tk):
         self.tree.heading("archived", text="Archived")
 
         self.tree.column("id", width=50, anchor="center")
-        self.tree.column("company", width=180)
-        self.tree.column("role", width=240)
+        self.tree.column("company", width=190)
+        self.tree.column("role", width=260)
         self.tree.column("date_applied", width=110, anchor="center")
         self.tree.column("status", width=150)
         self.tree.column("follow_up", width=120, anchor="center")
-        self.tree.column("archived", width=80, anchor="center")
+        self.tree.column("archived", width=90, anchor="center")
 
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        # Double-click to edit
         self.tree.bind("<Double-1>", lambda _event: self.edit_selected())
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(self, textvariable=self.status_var).pack(anchor="w", padx=10, pady=(0, 8))
 
+        self.load_rows()
+
+    def clear_filters(self) -> None:
+        self.search_var.set("")
+        self.status_filter_var.set("All")
+        self.show_archived_var.set(False)
         self.load_rows()
 
     def open_add_window(self) -> None:
@@ -301,17 +333,44 @@ class IATApp(tk.Tk):
         self.load_rows()
 
     def load_rows(self) -> None:
+        # Clear table
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        search_text = self.search_var.get().strip()
+        status_filter = self.status_filter_var.get().strip()
+        show_archived = self.show_archived_var.get()
+
+        # Build query safely
+        where = []
+        params: list[str | int] = []
+
+        if not show_archived:
+            where.append("archived = 0")
+
+        if status_filter and status_filter != "All":
+            where.append("status = ?")
+            params.append(status_filter)
+
+        if search_text:
+            # Search across company, role, and notes
+            where.append("(company_name LIKE ? OR role_title LIKE ? OR notes LIKE ?)")
+            like = f"%{search_text}%"
+            params.extend([like, like, like])
+
+        where_sql = ""
+        if where:
+            where_sql = "WHERE " + " AND ".join(where)
+
+        query = f"""
+            SELECT application_id, company_name, role_title, date_applied, status, follow_up_date, archived
+            FROM Applications
+            {where_sql}
+            ORDER BY application_id DESC;
+        """
+
         with sqlite3.connect(DB_FILE) as conn:
-            cur = conn.execute(
-                """
-                SELECT application_id, company_name, role_title, date_applied, status, follow_up_date, archived
-                FROM Applications
-                ORDER BY application_id DESC;
-                """
-            )
+            cur = conn.execute(query, params)
             rows = cur.fetchall()
 
         for (app_id, company, role, date_applied, status, follow_up_date, archived) in rows:
@@ -330,6 +389,31 @@ class IATApp(tk.Tk):
             )
 
         self.status_var.set(f"Loaded {len(rows)} application(s).")
+        self.update_summary_counts(show_archived=show_archived)
+
+    def update_summary_counts(self, show_archived: bool) -> None:
+        # Summary counts by status. Exclude archived unless explicitly shown.
+        where_sql = "" if show_archived else "WHERE archived = 0"
+
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.execute(
+                f"""
+                SELECT status, COUNT(*)
+                FROM Applications
+                {where_sql}
+                GROUP BY status
+                ORDER BY status;
+                """
+            )
+            counts = cur.fetchall()
+
+        # Build a readable summary string
+        if not counts:
+            self.summary_var.set("Summary: (no applications)")
+            return
+
+        parts = [f"{status}: {count}" for status, count in counts]
+        self.summary_var.set("Summary: " + " | ".join(parts))
 
 
 if __name__ == "__main__":
