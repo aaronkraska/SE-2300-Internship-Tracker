@@ -1,7 +1,7 @@
 import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 DB_FILE = "internships.db"
 
@@ -41,6 +41,11 @@ def init_db() -> None:
 def parse_date_iso(date_str: str) -> datetime:
     """Parse YYYY-MM-DD. Raise ValueError if invalid."""
     return datetime.strptime(date_str.strip(), "%Y-%m-%d")
+
+
+def parse_date_only(date_str: str) -> date:
+    """Parse YYYY-MM-DD into a date object. Raise ValueError if invalid."""
+    return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
 
 
 def calculate_follow_up(date_applied_iso: str) -> str:
@@ -192,11 +197,97 @@ class ApplicationFormWindow(tk.Toplevel):
         self.destroy()
 
 
+class FollowUpsDueWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Follow-ups Due")
+        self.geometry("820x360")
+
+        today = date.today()
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", padx=10, pady=10)
+
+        ttk.Label(header, text=f"Today: {today.isoformat()}").pack(side="left")
+
+        ttk.Button(header, text="Close", command=self.destroy).pack(side="right")
+
+        # Table
+        columns = ("id", "company", "role", "follow_up", "due_label", "status")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
+
+        self.tree.heading("id", text="ID")
+        self.tree.heading("company", text="Company")
+        self.tree.heading("role", text="Role")
+        self.tree.heading("follow_up", text="Follow-up Date")
+        self.tree.heading("due_label", text="Due")
+        self.tree.heading("status", text="Status")
+
+        self.tree.column("id", width=50, anchor="center")
+        self.tree.column("company", width=180)
+        self.tree.column("role", width=230)
+        self.tree.column("follow_up", width=120, anchor="center")
+        self.tree.column("due_label", width=120, anchor="center")
+        self.tree.column("status", width=140)
+
+        self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Load due rows
+        self.load_due_rows(today)
+
+        # Footer
+        self.footer_var = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.footer_var).pack(anchor="w", padx=10, pady=(0, 8))
+
+    def load_due_rows(self, today: date) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.execute(
+                """
+                SELECT application_id, company_name, role_title, follow_up_date, status
+                FROM Applications
+                WHERE archived = 0 AND follow_up_date <= ?
+                ORDER BY follow_up_date ASC, application_id ASC;
+                """,
+                (today.isoformat(),),
+            )
+            rows = cur.fetchall()
+
+        overdue_count = 0
+        today_count = 0
+
+        for app_id, company, role, follow_up_date, status in rows:
+            try:
+                fdate = parse_date_only(follow_up_date)
+            except ValueError:
+                # If somehow invalid, just label it generically
+                label = "Due"
+            else:
+                if fdate < today:
+                    label = "Overdue"
+                    overdue_count += 1
+                else:
+                    label = "Due Today"
+                    today_count += 1
+
+            self.tree.insert(
+                "",
+                "end",
+                values=(app_id, company, role, follow_up_date, label, status),
+            )
+
+        self.footer_var.set(
+            f"Total due: {len(rows)}  |  Overdue: {overdue_count}  |  Due today: {today_count}"
+        )
+
+
 class IATApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Internship Application Tracker (Prototype)")
-        self.geometry("1060x520")
+        self.title("Internship Application Tracker")
+        self.geometry("1120x560")
 
         # Top controls row
         top = ttk.Frame(self)
@@ -206,6 +297,10 @@ class IATApp(tk.Tk):
         ttk.Button(top, text="Edit", command=self.edit_selected).pack(side="left", padx=6)
         ttk.Button(top, text="Archive", command=self.archive_selected).pack(side="left", padx=6)
         ttk.Button(top, text="Delete", command=self.delete_selected).pack(side="left", padx=6)
+
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
+
+        ttk.Button(top, text="Follow-ups Due", command=self.open_followups_due).pack(side="left")
 
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
 
@@ -244,7 +339,7 @@ class IATApp(tk.Tk):
 
         # Table (Treeview)
         columns = ("id", "company", "role", "date_applied", "status", "follow_up", "archived")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=16)
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=18)
 
         self.tree.heading("id", text="ID")
         self.tree.heading("company", text="Company")
@@ -255,10 +350,10 @@ class IATApp(tk.Tk):
         self.tree.heading("archived", text="Archived")
 
         self.tree.column("id", width=50, anchor="center")
-        self.tree.column("company", width=190)
-        self.tree.column("role", width=260)
+        self.tree.column("company", width=200)
+        self.tree.column("role", width=280)
         self.tree.column("date_applied", width=110, anchor="center")
-        self.tree.column("status", width=150)
+        self.tree.column("status", width=160)
         self.tree.column("follow_up", width=120, anchor="center")
         self.tree.column("archived", width=90, anchor="center")
 
@@ -270,6 +365,9 @@ class IATApp(tk.Tk):
         ttk.Label(self, textvariable=self.status_var).pack(anchor="w", padx=10, pady=(0, 8))
 
         self.load_rows()
+
+    def open_followups_due(self) -> None:
+        FollowUpsDueWindow(self)
 
     def clear_filters(self) -> None:
         self.search_var.set("")
@@ -333,7 +431,6 @@ class IATApp(tk.Tk):
         self.load_rows()
 
     def load_rows(self) -> None:
-        # Clear table
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -341,9 +438,8 @@ class IATApp(tk.Tk):
         status_filter = self.status_filter_var.get().strip()
         show_archived = self.show_archived_var.get()
 
-        # Build query safely
         where = []
-        params: list[str | int] = []
+        params: list[str] = []
 
         if not show_archived:
             where.append("archived = 0")
@@ -353,7 +449,6 @@ class IATApp(tk.Tk):
             params.append(status_filter)
 
         if search_text:
-            # Search across company, role, and notes
             where.append("(company_name LIKE ? OR role_title LIKE ? OR notes LIKE ?)")
             like = f"%{search_text}%"
             params.extend([like, like, like])
@@ -392,7 +487,6 @@ class IATApp(tk.Tk):
         self.update_summary_counts(show_archived=show_archived)
 
     def update_summary_counts(self, show_archived: bool) -> None:
-        # Summary counts by status. Exclude archived unless explicitly shown.
         where_sql = "" if show_archived else "WHERE archived = 0"
 
         with sqlite3.connect(DB_FILE) as conn:
@@ -407,7 +501,6 @@ class IATApp(tk.Tk):
             )
             counts = cur.fetchall()
 
-        # Build a readable summary string
         if not counts:
             self.summary_var.set("Summary: (no applications)")
             return
