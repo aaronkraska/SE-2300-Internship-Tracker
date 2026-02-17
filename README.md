@@ -77,7 +77,25 @@ The system uses a simple layered architecture:
 | archived         | Boolean | Default false |
 
 ---
+## Installation and Setup
 
+### 1. Install Python
+
+Ensure Python 3 is installed on your system.
+
+### 2. Clone the Repository
+
+git clone https://github.com/aaronkraska/SE-2300-Internship-Tracker
+
+cd YOUR_REPOSITORY_NAME
+
+Replace `YOUR_REPOSITORY_NAME` with the location that you cloned it into.
+
+### 3. Run the Application
+
+Use python iat_app.py or python3 iat_app.py.
+
+Or if your environment has it, press the **run Python file** button.
 ## License
 
 This project is for educational purposes as part of coursework.
